@@ -1,0 +1,238 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Notebook accompanying the manuscipt of Floriddia et. al 2020, Distinct oligodendrocyte populations have spatial preference and different responses to spinal cord injury.
+
+Here we load the data of the first round of single cell sequencing and take samples _"GC_7_CC"_ and _"TC_6_CC"_ to integrate.  
+Previous runs without integration showed similar results, meaning they are not really experiencing batch effects, but I perform integration anyway to align them as best possible.
+```{r echo=FALSE}
+library(Seurat)
+library(ggplot2)
+options(future.globals.maxSize = 4000 * 1024^2)
+#Load data
+load("~/Documents/SingleCellData/Networkclustering/ElisaAnalysis/EverythingCombined.Rdata")
+cellstouse <- intersect(colnames(emat_10x),row.names(anno_10x))
+emat_10x <- emat_10x[,cellstouse]
+anno_10x <- anno_10x[cellstouse,]
+table(anno_10x)
+#Select only corpuscallosum data
+emat_10x <- emat_10x[,anno_10x %in% c("GC_7_CC","TC_6_CC")]
+anno_10x <- as.character(anno_10x)
+names(anno_10x) <- cellstouse
+anno_10x <- anno_10x[colnames(emat_10x)]
+#colnames(anno_10x) <- "Sample"
+anno_10x <- as.data.frame(anno_10x,stringsAsFactors = FALSE)
+colnames(anno_10x) <- "Sample"
+#Put in Seurat object and split in two to perform prepnormalization
+oligos <- CreateSeuratObject(emat_10x, meta.data =  anno_10x,min.cells = 3, min.features = 200)
+```
+  
+Now we perform QC, looking at the percentage of **mitochondrial RNA** vs **other RNA**, plus other metrics.  
+* nFeature_RNA = number of genes  
+* nCount_RNA = number of UMIs or Counts  
+* percent.mt = percent of expression of mitochondrial genes versus the rest
+```{r echo=TRUE}
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+oligos[["percent.mt"]] <- PercentageFeatureSet(oligos, pattern = "^mt-")
+# Visualize QC metrics as a violin plot
+VlnPlot(oligos, group.by = "Sample",features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3,pt.size = 0.1)
+```
+  
+The two samples seem comparable QC-wise, so now we plot the QC information in another way to see if we can estimate thesholds for removing bad cells and perhaps doublets.
+```{r echo=TRUE}
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+plot1 <- FeatureScatter(oligos, group.by = "Sample",feature1 = "nCount_RNA", feature2 = "percent.mt",pt.size = 0.1)
+plot2 <- FeatureScatter(oligos, group.by = "Sample", feature1 = "nCount_RNA", feature2 = "nFeature_RNA",pt.size = 0.1)
+CombinePlots(plots = list(plot1, plot2))
+```
+  
+These samples seem to be performing similarly, which is a great sign for the integration  
+Now we will remove cells expressing less that 200 genes (to remove bad cells),   
+and more than 3000 genes (to remove doublets). And remove cells expressing more that 5% mitochondrial genes.
+```{r}
+#Clean up the data
+oligos <- subset(oligos, subset = nFeature_RNA > 200 & nFeature_RNA < 3000 & percent.mt < 10)
+```
+Optional code to integrate the object (we did not for the paper)
+```{r include=FALSE}
+#oligos.integrated <- SCTransform(oligos,verbose = FALSE)
+oligos.list <- SplitObject(oligos, split.by = "Sample")
+for (i in 1:length(oligos.list)) {
+    oligos.list[[i]] <- SCTransform(oligos.list[[i]], verbose = FALSE)
+}
+```
+```{r include=FALSE}
+#integrate
+oligos.features <- SelectIntegrationFeatures(object.list = oligos.list, nfeatures = 3000)
+oligos.list <- PrepSCTIntegration(object.list = oligos.list, anchor.features = oligos.features,
+    verbose = FALSE)
+oligos.anchors <- FindIntegrationAnchors(object.list = oligos.list, normalization.method = "SCT",
+    anchor.features = oligos.features, verbose = FALSE)
+oligos.integrated <- IntegrateData(anchorset = oligos.anchors, normalization.method = "SCT",
+    verbose = FALSE)
+```
+  
+Generating the UMAP and TSNE.
+```{r}
+oligos.integrated <- RunPCA(oligos.integrated, verbose = FALSE)
+ElbowPlot(oligos.integrated)
+oligos.integrated <- RunUMAP(oligos.integrated, dims = 1:30)
+oligos.integrated <- RunTSNE(oligos.integrated, dims = 1:30)
+plots <- DimPlot(oligos.integrated, group.by = c("Sample"), combine = FALSE)
+plots <- lapply(X = plots, FUN = function(x) x + theme(legend.position = "top") + guides(color = guide_legend(nrow = 3, 
+    byrow = TRUE, override.aes = list(size = 3))))
+CombinePlots(plots)
+plots <- TSNEPlot(oligos.integrated, group.by = c("Sample"), combine = FALSE)
+plots <- lapply(X = plots, FUN = function(x) x + theme(legend.position = "top") + guides(color = guide_legend(nrow = 3, 
+    byrow = TRUE, override.aes = list(size = 3))))
+CombinePlots(plots)
+```
+  
+Here I show expression of some common genes that I know are supposed to be more or less stable clusters within the OLs, just for reference.
+```{r fig.width=10}
+DefaultAssay(oligos.integrated) <- "RNA"
+# Normalize RNA data for visualization purposes
+oligos.integrated <- NormalizeData(oligos.integrated, verbose = FALSE)
+FeaturePlot(oligos.integrated, c("Pdgfra", "Ptprz1","Bmp4","Itpr2", "Egr1", "Klk6", "Hopx", "Ptgds","Il33"),pt.size = 0.1)
+DefaultAssay(oligos.integrated) <- "integrated"
+```
+  
+Here I set the clustering to be specific for at least the tiny cluster of Astrocytes hiding in the middle of the UMAP. COPs are not included, not even with higher clustering resolutions, meaning I can only get them by subclustering. This might be because the COPs are such a tiny cluster in this data, and they express many markers that OPCs are expressing as well.  
+I show the clusters on the UMAP so you can see their position.
+```{r}
+oligos.integrated <- FindNeighbors(oligos.integrated, dims = 1:30)
+oligos.integrated <- FindClusters(oligos.integrated,resolution = 0.8)
+```
+```{r}
+DimPlot(oligos.integrated, group.by = c("seurat_clusters"), combine = FALSE)
+```
+  
+Below you will find a table of the top 2 markers found for each cluster. pct means percentage of expression, where pct.2 refers to all the cells not in the tested cluster.
+```{r include=FALSE}
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+library(dplyr)
+oligos.integrated.markers <- FindAllMarkers(oligos.integrated, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+```
+```{r}
+oligos.integrated.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC)
+```
+  
+Below follows the heatmap showing the top 10 genes based on fold change for each cluster.  
+```{r fig.width=10}
+DefaultAssay(oligos.integrated) <- "SCT"
+top10 <- oligos.integrated.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+DoHeatmap(oligos.integrated, features = top10$gene) + NoLegend()
+library(viridis)
+```
+
+And here are the top 2 genes found for each cluster as show on the UMAP.
+```{r fig.height=10, fig.width=10}
+DefaultAssay(oligos.integrated) <- "RNA"
+# Normalize RNA data for visualization purposes
+oligos.integrated <- NormalizeData(oligos.integrated, verbose = FALSE)
+top2 <- oligos.integrated.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC)
+FeaturePlot(oligos.integrated, features = top2$gene,pt.size = 0.1)
+```
+#### Label transfer
+Now we attempt to transfer the cluster labels of the Science dataset onto the 10X dataset.
+```{r include=FALSE}
+load("~/Documents/SingleCellData/Sciencedataset/Sciencematricesanno.Rdata")
+anno_science$Sample <- rep("Science",ncol(emat_science))
+Science <- CreateSeuratObject(emat_science, meta.data =  anno_science,min.cells = 3, min.features = 200)
+Science <- SCTransform(Science, min_cells=3,verbose = FALSE)
+
+DefaultAssay(oligos.integrated) <- "SCT"
+
+oligos.anchors <- FindTransferAnchors(reference = Science, query =oligos.integrated, dims = 1:15,project.query = T) 
+predictions <- TransferData(anchorset = oligos.anchors, refdata = Science$cell_class, dims = 1:15)
+oligos.integrated <- AddMetaData(oligos.integrated, metadata = predictions)
+```
+```{r}
+oligos.integrated$predicted.id <- factor(oligos.integrated$predicted.id,levels=c("OPC","COP","NFOL1","MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6"))
+DimPlot(oligos.integrated, group.by = c("seurat_clusters"), combine = FALSE)
+DimPlot(oligos.integrated, group.by = c("predicted.id"), combine = FALSE)
+DimPlot(oligos.integrated, group.by = c("Sample"), combine = FALSE)
+```
+
+
+```{r}
+barplot(table(oligos.integrated$Sample,oligos.integrated$predicted.id))
+data <- as.data.frame(table(oligos.integrated$Sample,oligos.integrated$predicted.id))
+colnames(data) <- c("Condition","Cluster","Freq")
+library(plyr)
+data$Cluster  <- factor(data$Cluster,levels=c("OPC","COP","NFOL1","MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6"))
+data$Cluster  <- revalue(as.factor(data$Cluster),c("PPR"="VLMC"))
+# Stacked + percent
+ggplot(data, aes(fill=Condition, y=Freq, x=Cluster)) + 
+    geom_bar(position="fill", stat="identity")
+
+
+
+barplot(table(oligos.integrated$Sample,oligos.integrated$seurat_clusters))
+data <- as.data.frame(table(oligos.integrated$Sample,oligos.integrated$seurat_clusters))
+colnames(data) <- c("Condition","Cluster","Freq")
+library(plyr)
+# Stacked + percent
+ggplot(data, aes(fill=Condition, y=Freq, x=Cluster)) + 
+    geom_bar(position="fill", stat="identity")
+
+```
+```{r}
+data <- as.data.frame(table(oligos.integrated$Sample,oligos.integrated$predicted.id))
+colnames(data) <- c("Condition","Cluster","Freq")
+library(plyr)
+data$Cluster  <- factor(data$Cluster,levels=c("OPC","COP","NFOL1","MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6"))
+library(reshape2)
+datacasted <- dcast(data,Cluster ~ Condition)
+calc_cpm <-function (expr_mat) 
+{
+    norm_factor <- colSums(expr_mat)
+    return(t(t(expr_mat)/norm_factor)) * 10^50
+}
+datacasted[,2:3] <- calc_cpm(datacasted[,2:3])
+data <- melt(datacasted)
+colnames(data) <- c("Condition","Cluster","Freq")
+#data$Cluster  <- revalue(as.factor(data$Cluster),c("PPR"="VLMC"))
+# Stacked + percent
+ggplot(data, aes(fill=Condition, y=Freq, x=Cluster)) + 
+    geom_bar(position="fill", stat="identity")
+ggplot(data, aes(fill=Cluster, y=Freq, x=Condition)) + 
+    geom_bar( stat="identity")
+
+row.names(datacasted) <- datacasted[,1]
+datacasted <- datacasted[,2:3]*100
+datamelted <- melt(t(datacasted))
+
+ggplot(datamelted, aes(y = value, x = Var2)) + # Move y and x here so than they can be used in stat_*
+    geom_dotplot(aes(fill = Var1),   # Use fill = Species here not in ggplot()
+                 binaxis = "y",         # which axis to bin along
+                 binwidth = 2,        # Minimal difference considered diffeerent
+                 stackdir = "center",
+                 position = position_jitter(0.2)# Centered
+                 ) +  # scale_y_log10() + 
+    stat_summary(fun.y = mean, fun.ymin = mean, fun.ymax = mean,
+                 geom = "crossbar", width = 0.5,fatten = 0.01) + theme(axis.text.x = element_text(angle = 45))
+```
+```{r include=FALSE}
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+DefaultAssay(oligos.integrated) <- "SCT"
+Idents(oligos.integrated) <- "predicted.id"
+library(dplyr)
+oligos.integrated.markers <- FindAllMarkers(oligos.integrated, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.1)
+```
+```{r}
+oligos.integrated.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC)
+```
+```{r fig.height=12, fig.width=4}
+VlnPlot(oligos.integrated, group.by = "predicted.id",features = c("Ptprz1","Serpine2","Egr1","Egr2","Dusp1","Fosb","Klk6","Hopx","Anxa5","Ptgds","Grm3","Car2","Il33"), ncol = 1,pt.size = 0.1)
+```
+```{r fig.width=10}
+library(viridis)
+DefaultAssay(oligos.integrated) <- "integrated"
+top10 <- oligos.integrated.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+
+DoHeatmap(oligos.integrated,features = top10$gene) + NoLegend() +scale_fill_viridis()
+```
