@@ -1,0 +1,948 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r echo=FALSE}
+library(Seurat)
+library(ggplot2)
+options(future.globals.maxSize = 4000 * 1024^2)
+#Load data
+paths <- c("/Volumes/Castelo-Branco/UPPMAX_INBOX_BACKUP/INBOX/10X_19_GCB_15_R42/10X_19_073/outs/filtered_feature_bc_matrix/",
+           "/Volumes/Castelo-Branco/UPPMAX_INBOX_BACKUP/INBOX/10X_19_GCB_15_R42/10X_19_074/outs/filtered_feature_bc_matrix/",
+           "/Volumes/Castelo-Branco/UPPMAX_INBOX_BACKUP/INBOX/10X_19_GCB_15_R42/10X_19_075/outs/filtered_feature_bc_matrix/")
+names(paths) <- c("IS","CTRL","WD")
+SC <- Read10X(data.dir = paths, gene.column = 2, unique.features = TRUE)
+Samples <- strsplit(unlist(SC@Dimnames[2]),"_")
+Samples <- unlist(lapply(Samples,function(x) x[1]))
+names(Samples) <- colnames(SC)
+table(Samples) 
+emat_10x <- SC
+anno_10x <- Samples
+anno_10x <- as.data.frame(anno_10x,stringsAsFactors = FALSE)
+
+colnames(anno_10x) <- "Sample"
+#Put in Seurat object and split in two to perform prepnormalization
+oligos <- CreateSeuratObject(emat_10x, meta.data =  anno_10x,min.cells = 3, min.features = 200)
+```
+```{r echo=TRUE, fig.height=6, fig.width=6}
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+oligos[["percent.mt"]] <- PercentageFeatureSet(oligos, pattern = "^mt-")
+# Visualize QC metrics as a violin plot
+VlnPlot(oligos, group.by = "Sample",features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 1,pt.size = 0.1)
+```
+```{r echo=TRUE, fig.height=6, fig.width=10}
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+plot1 <- FeatureScatter(oligos, group.by = "Sample",feature1 = "nCount_RNA", feature2 = "percent.mt",pt.size = 0.5)
+plot2 <- FeatureScatter(oligos, group.by = "Sample", feature1 = "nCount_RNA", feature2 = "nFeature_RNA",pt.size = 0.5)
+CombinePlots(plots = list(plot1, plot2))
+```
+```{r}
+#Clean up the data
+oligos <- subset(oligos, subset = nFeature_RNA > 500 & nFeature_RNA < 7000 & percent.mt < 10)
+ncol(oligos)
+```
+```{r echo=TRUE, fig.height=6, fig.width=6}
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+oligos[["percent.mt"]] <- PercentageFeatureSet(oligos, pattern = "^mt-")
+# Visualize QC metrics as a violin plot
+VlnPlot(oligos, group.by = "Sample",features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 1,pt.size = 0.1)
+```
+```{r echo=TRUE, fig.height=6, fig.width=10}
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+plot1 <- FeatureScatter(oligos, group.by = "Sample",feature1 = "nCount_RNA", feature2 = "percent.mt",pt.size = 0.5)
+plot2 <- FeatureScatter(oligos, group.by = "Sample", feature1 = "nCount_RNA", feature2 = "nFeature_RNA",pt.size = 0.5)
+CombinePlots(plots = list(plot1, plot2))
+```
+Now we normalize the dataset.
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+#oligos.integrated <- SCTransform(oligos,verbose = FALSE)
+# oligos.list <- SplitObject(oligos, split.by = "Sample")
+# for (i in 1:length(oligos.list)) {
+#     oligos.list[[i]] <- SCTransform(oligos.list[[i]], verbose = FALSE)
+# }
+# oligos.integrated <- merge(oligos.list[[1]],oligos.list,merge.data = TRUE)
+#use code below when no integration is needed
+oligos.integrated<- SCTransform(oligos, verbose = FALSE)
+```
+```{r eval=FALSE, include=FALSE}
+#integrate
+oligos.features <- SelectIntegrationFeatures(object.list = oligos.list, nfeatures = 3000)
+oligos.list <- PrepSCTIntegration(object.list = oligos.list, anchor.features = oligos.features, 
+    verbose = FALSE)
+oligos.anchors <- FindIntegrationAnchors(object.list = oligos.list, normalization.method = "SCT", 
+    anchor.features = oligos.features, verbose = FALSE)
+oligos.integrated <- IntegrateData(anchorset = oligos.anchors, normalization.method = "SCT", 
+    verbose = FALSE)
+```
+Generating the UMAP and TSNE.
+```{r}
+#DefaultAssay(oligos.integrated) <- "integrated"
+oligos.integrated <- RunPCA(oligos.integrated, verbose = FALSE)
+oligos.integrated <- RunUMAP(oligos.integrated, dims = 1:30)
+#oligos.integrated <- RunTSNE(oligos.integrated, dims = 1:30)
+plots <- DimPlot(oligos.integrated, group.by = c("Sample"), combine = FALSE)
+plots <- lapply(X = plots, FUN = function(x) x + theme(legend.position = "top") + guides(color = guide_legend(nrow = 3, 
+    byrow = TRUE, override.aes = list(size = 3))))
+CombinePlots(plots)
+# plots <- TSNEPlot(oligos.integrated, group.by = c("Sample"), combine = FALSE)
+# plots <- lapply(X = plots, FUN = function(x) x + theme(legend.position = "top") + guides(color = guide_legend(nrow = 3, 
+#     byrow = TRUE, override.aes = list(size = 3))))
+# CombinePlots(plots)
+```  
+#### Label transfer
+Now we attempt to transfer the cluster labels of the Science dataset onto the 10X dataset.
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=TRUE}
+load("~/Documents/SingleCellData/Sciencedataset/Sciencematricesanno.Rdata")
+anno_science$Sample <- rep("Science",ncol(emat_science))
+Science <- CreateSeuratObject(emat_science, meta.data =  anno_science,min.cells = 3, min.features = 200)
+Science <- SCTransform(Science, min_cells=3,verbose = FALSE)
+#oligos.integrated <- Science
+DefaultAssay(oligos.integrated) <- "SCT"
+
+oligos.anchors <- FindTransferAnchors(reference = Science, query =oligos.integrated, dims = 1:30,project.query = T) 
+predictions <- TransferData(anchorset = oligos.anchors, refdata = Science$cell_class, dims = 1:30)
+oligos.integrated <- AddMetaData(oligos.integrated, metadata = predictions)
+DimPlot(oligos.integrated, group.by = c("predicted.id"), combine = FALSE)
+
+length(which(oligos.integrated$prediction.score.max < 0.3))
+confidentclusters <- oligos.integrated$predicted.id
+confidentclusters[which(oligos.integrated$prediction.score.max < 0.3)] <- "NA"
+predictions <-cbind(predictions,confidentclusters)
+oligos.integrated <- AddMetaData(oligos.integrated, metadata = predictions)
+```
+```{r}
+oligos.integrated <- FindNeighbors(oligos.integrated, dims = 1:30)
+oligos.integrated <- FindClusters(oligos.integrated,algorithm = 4,resolution = 0.6)
+#0.6
+```
+```{r}
+oligos.integrated$predicted.id <- factor(oligos.integrated$predicted.id,levels=c("OPC","COP","NFOL1","MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6","PPR"))
+DimPlot(oligos.integrated, group.by = c("seurat_clusters"), combine = FALSE)
+DimPlot(oligos.integrated, group.by = c("predicted.id"), combine = FALSE)
+DimPlot(oligos.integrated, group.by = c("Sample"), combine = FALSE)
+```
+
+```{r}
+table(oligos.integrated$Sample,oligos.integrated$predicted.id)
+```
+```{r}
+data <- as.data.frame(table(oligos.integrated$Sample,droplevels(as.factor(oligos.integrated$predicted.id))))
+colnames(data) <- c("Condition","Cluster","Freq")
+library(plyr)
+data$Cluster  <- factor(data$Cluster,levels=c("OPC","COP","NFOL1","MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6","PPR"))
+data <- data[which(data$Cluster %in% c("MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6")),]
+#data$Cluster  <- factor(data$Cluster,levels=c("MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6"))
+library(reshape2)
+datacasted <- dcast(data,Cluster ~ Condition)
+calc_cpm <-function (expr_mat) 
+{
+    norm_factor <- colSums(expr_mat)
+    return(t(t(expr_mat)/norm_factor))
+}
+datacasted[,2:4] <- calc_cpm(datacasted[,2:4])
+data <- melt(datacasted)
+colnames(data) <- c("Condition","Cluster","Freq")
+#data$Cluster  <- revalue(as.factor(data$Cluster),c("PPR"="VLMC"))
+# Stacked + percent
+ggplot(data, aes(fill=Condition, y=Freq, x=Cluster)) + 
+    geom_bar(position="fill", stat="identity")
+ggplot(data, aes(fill=Cluster, y=Freq, x=Condition)) + 
+    geom_bar( stat="identity")
+
+row.names(datacasted) <- datacasted[,1]
+datacasted <- datacasted[,2:4]*100
+datamelted <- melt(t(datacasted))
+
+ggplot(datamelted, aes(y = value, x = Var2)) + # Move y and x here so than they can be used in stat_*
+    geom_dotplot(aes(fill = Var1),   # Use fill = Species here not in ggplot()
+                 binaxis = "y",         # which axis to bin along
+                 binwidth = 1,        # Minimal difference considered diffeerent
+                 stackdir = "center",
+                 position = position_jitter(0.2)# Centered
+                 ) +  # scale_y_log10() + 
+    stat_summary(fun.y = mean, fun.ymin = mean, fun.ymax = mean,
+                 geom = "crossbar", width = 0.5,fatten = 0.01) + theme(axis.text.x = element_text(angle = 45))
+```
+```{r fig.height=3, fig.width=3}
+library(heatmap3)
+library(viridis)
+data <- as.data.frame(table(oligos.integrated$Sample,droplevels(as.factor(oligos.integrated$predicted.id))))
+colnames(data) <- c("Condition","Cluster","Freq")
+library(plyr)
+data$Cluster  <- factor(data$Cluster,levels=c("OPC","COP","NFOL1","MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6","PPR"))
+data <- data[which(data$Cluster %in% c("MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6")),]
+#data$Cluster  <- factor(data$Cluster,levels=c("MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6"))
+library(reshape2)
+datacasted <- dcast(data,Cluster ~ Condition)
+calc_cpm <-function (expr_mat) 
+{
+    norm_factor <- colSums(expr_mat)
+    return(t(t(expr_mat)/norm_factor))
+}
+datacasted[,2:4] <- calc_cpm(datacasted[,2:4])*100
+row.names(datacasted) <- datacasted[,1]
+datacasted <- datacasted[,2:4]
+comparison <-datacasted-apply(datacasted,1,function(x) mean(x))
+comparison <-datacasted-datacasted[,1]
+heatmap3(comparison[rev(row.names(comparison)),], Rowv = NA , Colv = NA ,scale = "none",symm = F, method = "ward.D2",col=viridis(1000),balanceColor =F,cexRow = 1,cexCol = 1,margins = c(10, 10))
+library(RColorBrewer)
+heatmap3(comparison[rev(row.names(comparison)),], Rowv = NA , Colv = NA ,scale = "none",symm = F, method = "ward.D2",col=rev(colorRampPalette(brewer.pal(1024,"RdBu"))(1024)),balanceColor =T,cexRow = 1,cexCol = 1,margins = c(10, 10))
+  relationshipratio <- cor(t(comparison),method="pearson")
+heatmap3(relationshipratio[rev(row.names(comparison)),], Rowv = NULL , Colv = NULL ,scale = "none",symm = F, method = "ward.D2",col=colorRampPalette(c("limegreen","black",
+"firebrick3"))(1024),balanceColor =F,cexRow = 2,cexCol = 2,margins = c(10, 10))
+```
+```{r}
+barplot(table(oligos.integrated$Sample,oligos.integrated$predicted.id))
+data <- as.data.frame(table(oligos.integrated$Sample,oligos.integrated$predicted.id))
+colnames(data) <- c("Condition","Cluster","Freq")
+library(plyr)
+data$Cluster  <- factor(data$Cluster,levels=c("OPC","COP","NFOL1","MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6","PPR"))
+data$Cluster  <- revalue(as.factor(data$Cluster),c("PPR"="VLMC"))
+dataIS_CTRL <- data[which(data$Condition %in% c("IS","CTRL")),]
+dataWD_CTRL <- data[which(data$Condition %in% c("WD","CTRL")),]
+dataIS_WD <- data[which(data$Condition %in% c("IS","WD")),]
+# Stacked + percent
+ggplot(data, aes(fill=Condition, y=Freq, x=Cluster)) + 
+    geom_bar(position="fill", stat="identity")
+ggplot(dataIS_CTRL, aes(fill=Condition, y=Freq, x=Cluster)) + 
+    geom_bar(position="fill", stat="identity")
+ggplot(dataWD_CTRL, aes(fill=Condition, y=Freq, x=Cluster)) + 
+    geom_bar(position="fill", stat="identity")
+ggplot(dataIS_WD, aes(fill=Condition, y=Freq, x=Cluster)) + 
+    geom_bar(position="fill", stat="identity")
+```
+
+```{r}
+#subset OPCs
+oligos.integratedIm <- subset(oligos.integrated,seurat_clusters %in% c(12,11,8,9))
+
+
+oligos.integratedIm <- FindVariableFeatures(oligos.integratedIm)
+DefaultAssay(oligos.integratedIm) <- "SCT"
+```
+
+
+#Spatially filter genes with auto bootstrapping
+#Script will give error when running out of genes, this is normal
+```{r, message=FALSE}
+networkExpressionFile=oligos.integratedIm@assays$SCT@scale.data
+expr_limit <- min(networkExpressionFile)-0.01
+featureselection <- row.names(networkExpressionFile)
+gc()
+library(umap)
+useUMAP <- "TRUE"
+UMAPdim <- 3
+adjustforbias <- "FALSE"
+GeneMarkovList <- list()
+GeneFilterProgression <- as.data.frame(featureselection)
+row.names(GeneFilterProgression) <- featureselection
+corenumber <- 4
+usemagic <- "FALSE"
+pcathresh <- 20
+ncompGF <- 20
+whentobootstrap <- 20000 #cellnumber
+howmanyboots <- 10+1 #bootstrap repetitions
+samplesize <- 2000 #how many cells to take for sampling
+threshold <- 3 #use mean spatial correlation of geneset of the featureselection (1) or after the first round of filtering (2) (more strict, which is default) 
+nsim <- 100
+nnquant <- 0.995 #lower for small datasets, higher for speedups in larger datasets
+
+tri.to.squ<-function(x)
+{
+rn<-row.names(x)
+cn<-colnames(x)
+an<-unique(c(cn,rn))
+myval<-x[!is.na(x)]
+mymat<-matrix(1,nrow=length(an),ncol=length(an),dimnames=list(an,an))
+for(ext in 1:length(cn))
+{
+ for(int in 1:length(rn))
+ {
+ if(is.na(x[row.names(x)==rn[int],colnames(x)==cn[ext]])) next
+ mymat[row.names(mymat)==rn[int],colnames(mymat)==cn[ext]]<-x[row.names(x)==rn[int],colnames(x)==cn[ext]]
+ mymat[row.names(mymat)==cn[ext],colnames(mymat)==rn[int]]<-x[row.names(x)==rn[int],colnames(x)==cn[ext]]
+ }
+}
+return(mymat)
+}
+
+SCN3Egeneset <- featureselection
+originalnetworkdf <- networkExpressionFile
+if(ncol(networkExpressionFile)>whentobootstrap){
+originalnetworkdf <- networkExpressionFile
+bootstrap<-1
+sample<-1
+moransIsampled <- as.character(NULL)
+}
+if(ncol(networkExpressionFile)<=whentobootstrap)
+{
+  bootstrap<-howmanyboots-1
+  sample<-0
+  }
+while(bootstrap<howmanyboots){
+SCN3Egeneset <- featureselection
+iter=0
+meanMoran<-0
+if(sample==1){
+networkExpressionFile  <- originalnetworkdf[,sample(ncol(originalnetworkdf), samplesize) ]
+print(paste("bootstrapping...","round",bootstrap))
+}
+OldGeneset <- as.character(seq_len(100000))
+while(length(OldGeneset) > (length(SCN3Egeneset)+10) ){ # uncomment this and below to enable iterative filtering
+ iter=iter+1
+  #library(amap)
+#library(MASS)
+#library(destiny)
+#library(dpt)
+#library(Matrix)
+#library(diffusionMap)
+print(paste("Preparing genefiltering on", length(SCN3Egeneset), "genes."))
+#print("Making celllandscape...Filtering possible duplicated cells in original file")
+#if(length(OldGeneset)==100000)
+#{
+#  pca <- prcomp(t(log(networkExpressionFile[featureselection,]+1)),scale. = FALSE)
+#  cd_diffusionplot <-pca$x[,c(1:30)]
+#  }
+
+#if(length(OldGeneset)!=100000){cd_diffusionplot <- t(log(networkExpressionFile[SCN3Egeneset,]+1))}
+  if(length(SCN3Egeneset) > pcathresh){
+#library(rsvd)
+    print("Making celllandscape...Performing dimensionality reduction")
+#pca <- rpca(t(log(networkExpressionFile[SCN3Egeneset,]+1)))
+#pca <- prcomp(t(log(networkExpressionFile[SCN3Egeneset,]+1)),scale. = TRUE)
+pca <- prcomp(t(networkExpressionFile[SCN3Egeneset,]),scale. = TRUE)
+if(length(SCN3Egeneset) < 100) {ncompGF <- length(SCN3Egeneset)}
+cd_diffusionplot <-pca$x[,c(1:which(cumsum(pca$sdev[1:ncompGF])/sum(pca$sdev[1:ncompGF]) > 0.8)[1])]
+  }
+   if(length(SCN3Egeneset) <= pcathresh){
+#cd_diffusionplot <-t(log(networkExpressionFile[SCN3Egeneset,]+1))
+cd_diffusionplot <-t(networkExpressionFile[SCN3Egeneset,])
+}
+cd_diffusionplot <- cd_diffusionplot[!duplicated(cd_diffusionplot),]
+print("Making celllandscape...Making diffusionmap")
+# gc()
+#ts <- Transitions(cd_diffusionplot,k=20)
+if(useUMAP==TRUE)
+{
+  library(umap)
+umap.settings <- umap.defaults
+umap.settings$n_neighbors <-10
+umap.settings$min_dist <- 0
+umap.settings$n_components <- UMAPdim
+umap.settings$metric <- "manhattan"
+#umap.settings$local_connectivity <- 0.00001
+umap.settings$n_epochs <- 1000
+umap_out <- umap(cd_diffusionplot,config = umap.settings,method="umap-learn")
+}
+if(useUMAP != TRUE){
+library(destiny)
+ts <- DiffusionMap(cd_diffusionplot, verbose = TRUE)
+}
+if(adjustforbias==TRUE){
+testwilcox <- as.matrix(apply(t(ts@eigenvectors),1,function(x) apply(tri.to.squ(pairwise.wilcox.test(x,biasedfactor,p.adjust.method = "fdr")$p.value),2,function(x) min(x,na.rm=TRUE))))
+
+testwilcoxdifference <- scale(t(testwilcox))
+biasedcomponents <- unique(unlist(apply(testwilcoxdifference,2,function(x) which(abs(x) > 1.96))))
+}
+#Gene filtering
+print(paste("Filtering", length(SCN3Egeneset), "genes."))
+OldGeneset <- SCN3Egeneset
+#NetworkDist <- as.matrix(ts@transitions)
+library(amap)
+range01 <- function(x){(x-min(x))/(max(x)-min(x))}
+if(useUMAP==TRUE)
+  {
+  if(adjustforbias==TRUE){
+NetworkDist <- 1-range01((as.matrix(Dist(umap_out$layout[,1:UMAPdim],method = "manhattan",nbproc = 8))))}
+else{NetworkDist <- 1-range01((as.matrix(Dist(umap_out$layout[,1:UMAPdim],method = "manhattan",nbproc = 8))))}
+}
+if(useUMAP != TRUE){
+if(adjustforbias==TRUE){
+NetworkDist <- 1-range01((as.matrix(Dist(ts@eigenvectors[,-c(biasedcomponents)],method = "manhattan",nbproc = 8))))}
+else{NetworkDist <- 1-range01((as.matrix(Dist(ts@eigenvectors,method = "manhattan",nbproc = 8))))}
+}
+#NetworkDist <- distcells*distcells2
+colnames(NetworkDist) <- row.names(cd_diffusionplot)
+row.names(NetworkDist) <- row.names(cd_diffusionplot)
+emat_expressed <- apply(networkExpressionFile,1,function(x) any ((x) >expr_limit))
+emat_expressed <- networkExpressionFile[emat_expressed,row.names(NetworkDist)]
+emat_expressed <- as.matrix(emat_expressed[intersect(row.names(emat_expressed),OldGeneset),])
+if(usemagic=="TRUE"){
+emat_expressed <- magic(ts,emat_expressed[,row.names(cd_diffusionplot)], power = 1, k = 20, n_eigs = 20, n_local = 10)
+}
+#library(doParallel)
+#library(foreach)
+library(parallel)
+library(spdep)
+cores <- corenumber
+# cl <- makeCluster(cores)  
+# registerDoParallel(cl)  
+SCN3Egenefilter <- matrix(nrow=nrow(emat_expressed),ncol = 3) 
+cellnames <- colnames(emat_expressed)
+# library(Matrix)
+# NetworkDistsparse <- Matrix(NetworkDist, sparse = TRUE)
+print("Making celllandscape...Generating Spatial Weights Matrix...")
+i=1
+NetworkDist2 <- matrix(nrow=nrow(NetworkDist),ncol=ncol(NetworkDist))
+  for(i in 1:ncol(NetworkDist2))
+    {
+  x <-NetworkDist[,i] 
+ x[x < as.numeric(quantile(x,nnquant))] <- 0
+ NetworkDist2[,i] <- x
+  }
+NetworkDist <- NetworkDist2
+rm(NetworkDist2)
+colnames(NetworkDist) <- row.names(cd_diffusionplot)
+row.names(NetworkDist) <- row.names(cd_diffusionplot)
+spatial.weights <- mat2listw(NetworkDist[])
+print("Making celllandscape...Generating Spatial Weights Matrix...done")
+numbsim <- nsim
+i=1
+test <- as.data.frame(mclapply(1:nrow(emat_expressed), function(i) {
+   return(m <- c(unlist(moran.mc(emat_expressed[i,],spatial.weights,nsim=numbsim,zero.policy = TRUE))[1:3],row.names(emat_expressed)[i]))
+}, mc.cores=corenumber))
+
+
+SCN3Egenefilter <- t(test)
+SCN3Egenefilter <- SCN3Egenefilter[! apply(SCN3Egenefilter,1,function(x) any(x=="NaN")),]
+row.names(SCN3Egenefilter) <- SCN3Egenefilter[,4]
+SCN3Egenefilter_clean <- as.data.frame(SCN3Egenefilter[complete.cases(SCN3Egenefilter),c(1:4)])
+ r <- row.names(SCN3Egenefilter_clean)
+SCN3Egenefilter_clean <- apply(SCN3Egenefilter_clean,2,function(x) as.numeric(x))
+row.names(SCN3Egenefilter_clean) <- r
+SCN3Egeneset <- row.names(subset(SCN3Egenefilter_clean,SCN3Egenefilter_clean[,3] <= 0.01))
+HSEgenes <- row.names(subset(SCN3Egenefilter_clean,SCN3Egenefilter_clean[,3] <= 0.01 & SCN3Egenefilter_clean[,1] >= as.numeric(quantile(SCN3Egenefilter_clean[SCN3Egeneset,1],0.1))))
+SCN3Egeneset <- row.names(subset(SCN3Egenefilter_clean,SCN3Egenefilter_clean[,3] <= 0.01 & SCN3Egenefilter_clean[,1] >= as.numeric(quantile(SCN3Egenefilter_clean[SCN3Egeneset,1],0.1))))
+GeneFilterProgression <- cbind(GeneFilterProgression[SCN3Egeneset,],SCN3Egenefilter_clean[SCN3Egeneset,1])
+if(iter<=threshold){meanMoran<-mean(abs(SCN3Egenefilter_clean[,1]),na.rm=TRUE)}
+GeneMarkovList <- c(list(GeneMarkov=SCN3Egeneset),GeneMarkovList)
+} #uncomment this to enable iterative filtering
+bootstrap <- bootstrap+1
+if(sample==1){
+moransIsampled <- c(moransIsampled,SCN3Egeneset)
+}
+}
+networkExpressionFile <- originalnetworkdf
+GeneMarkov <- SCN3Egeneset
+if(sample==1){GeneMarkov <- unique(moransIsampled)}
+#L1geneset <- GeneMarkov
+rm(emat_expressed,NetworkDist,SCN3Egenefilter,test,cellnames,cl,cores,i,iter,meanMoran,numbsim,OldGeneset,r,SCN3Egeneset,spatial.weights)
+L1geneset <- GeneMarkov
+rm(emat_expressed,NetworkDist,SCN3Egenefilter,test,cellnames,cl,cores,i,iter,meanMoran,numbsim,OldGeneset,r,SCN3Egeneset,spatial.weights)
+
+  print("Making final celllandscape...Filtering possible duplicated cells in original file")
+   if(length(GeneMarkov) > pcathresh){
+pca <- prcomp(t(log(networkExpressionFile[GeneMarkov,]+1)),scale. = FALSE)
+
+if(length(GeneMarkov) < 100) {ncompGF <- length(GeneMarkov)}
+cd_diffusionplot <-pca$x[,c(1:which(cumsum(pca$sdev[1:ncompGF])/sum(pca$sdev[1:ncompGF]) > 0.8)[1])]
+  }
+   if(length(GeneMarkov) <= pcathresh){
+cd_diffusionplot <-t(log(networkExpressionFile[GeneMarkov,]+1))
+}
+cd_diffusionplot <- cd_diffusionplot[!duplicated(cd_diffusionplot),]
+if(useUMAP != TRUE){
+print("Making final celllandscape...Making diffusionmap. This can take a while...")
+library(destiny)
+ts <- DiffusionMap(cd_diffusionplot, verbose = TRUE)
+}
+  if(usemagic=="TRUE"){
+    networkExpressionFilepremagic <-  networkExpressionFile
+networkExpressionFile <- magic(ts,networkExpressionFile[,row.names(cd_diffusionplot)], power = 1, k = 20, n_eigs = 20, n_local = 10)
+  }
+if(useUMAP==TRUE)
+{
+  print("Making final celllandscape...Making UMAP. This can take a while...")
+umap.settings <- umap.defaults
+umap.settings$n_neighbors <-4
+umap.settings$min_dist <- 0
+umap.settings$n_components <-UMAPdim
+umap.settings$metric <- "manhattan"
+#umap.settings$local_connectivity <- 0.00001
+umap.settings$n_epochs <- 1000
+umap_out <- umap(cd_diffusionplot,config = umap.settings,method="umap-learn")
+}
+print("Done.")
+if(adjustforbias==TRUE){
+testwilcox <- as.matrix(apply(t(ts@eigenvectors),1,function(x) apply(tri.to.squ(pairwise.wilcox.test(x,biasedfactor,p.adjust.method = "fdr")$p.value),2,function(x) min(x,na.rm=TRUE))))
+
+testwilcoxdifference <- scale(t(testwilcox))
+biasedcomponentswilcox <- unique(unlist(apply(testwilcox,2,function(x) which(abs(x) ==0))))
+biasedcomponents <- unique(unlist(apply(testwilcoxdifference,2,function(x) which(abs(x) > 1.96))))
+}
+```
+```{r}
+length_iterations <-  unlist(lapply(GeneMarkovList,function(x) length(x)))
+plot(seq_along(length_iterations),length_iterations)
+```
+```{r}
+pcatsne <- prcomp(t(as.matrix(networkExpressionFile[unlist(GeneMarkovList[26]),])),scale. = TRUE)
+pca <- pcatsne
+plot(log(pcatsne$sdev[1:50]),pch = 20,
+xlab = 'Principal component', ylab = 'sdev')
+ncompL1tsne <- which(cumsum(pca$sdev[1:50])/sum(pca$sdev[1:50]) > 0.6)[1]
+tsne <- t(pca$x[,c(1:ncompL1tsne)]) 
+
+number_of_clusters <- 8
+NetworkDist <- Dist(t(tsne),method = "manhattan",nbproc = 8)
+GeneMarkov_hc <- hclust(NetworkDist, method = "ward.D2")
+GMcluster <- rbind(groups = cutree(GeneMarkov_hc, k=number_of_clusters))
+names(GMcluster) <- colnames(networkExpressionFile)
+oligos.integratedIm$seurat_clusters <- as.factor(GMcluster)
+GeneMarkov  <- unlist(GeneMarkovList[27])
+```
+```{r}
+DefaultAssay(oligos.integratedIm) <- "SCT"
+oligos.integratedIm <- RunPCA(oligos.integratedIm, verbose = FALSE,features = GeneMarkov)#npcs = 20)
+ElbowPlot(oligos.integratedIm)
+```
+```{r}
+oligos.integratedIm <- RunUMAP(oligos.integratedIm, dims = 1:10)
+#oligos.integratedScience <- RunTSNE(oligos.integratedScience, dims = 1:10)
+plots <- DimPlot(oligos.integratedIm, group.by = c("seurat_clusters"), combine = FALSE)
+plots <- lapply(X = plots, FUN = function(x) x + theme(legend.position = "top") + guides(color = guide_legend(nrow = 3, 
+    byrow = TRUE, override.aes = list(size = 3))))
+CombinePlots(plots)
+plots <- DimPlot(oligos.integratedIm, group.by = c("Sample"), combine = FALSE)
+plots <- lapply(X = plots, FUN = function(x) x + theme(legend.position = "top") + guides(color = guide_legend(nrow = 3, 
+    byrow = TRUE, override.aes = list(size = 3))))
+CombinePlots(plots)
+```  
+```{r include=FALSE}
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+Idents(oligos.integratedIm) <- "seurat_clusters"
+library(dplyr)
+oligos.integrated.markersIm <- FindAllMarkers(oligos.integratedIm, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+```
+```{r}
+oligos.integrated.markersIm %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC)
+```
+```{r fig.width=10}
+library(viridis)
+DefaultAssay(oligos.integratedIm) <- "SCT"
+top10 <- oligos.integrated.markersIm %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+# DoHeatmap(oligos.integratedIm, features = intersect(oligos.integrated.markersIm$gene,GeneMarkov),disp.max=7,) + NoLegend() +scale_fill_viridis()
+
+DoHeatmap(oligos.integratedIm, features =intersect(oligos.integrated.markersIm$gene,unique(c(unlist(GeneMarkovList[5]),top10$gene))),disp.max=3) + NoLegend() +scale_fill_viridis()
+```
+```{r}
+#for MT=10%
+oligos.integratedOL <- subset(oligos.integrated,seurat_clusters %in% c(1:6,8,9))
+#non-integrated
+#oligos.integratedOL <- subset(oligos.integrated,seurat_clusters %in% c(1:6,10))
+#for MT=5%
+#oligos.integratedOL <- subset(oligos.integrated,seurat_clusters %in% c(1:5))
+DefaultAssay(oligos.integrated) <- "SCT"
+# oligos.integratedOL <- RunPCA(oligos.integratedOL, verbose = FALSE,features=c("Opalin","Ptgds","Apoe","S100b","Apod","Lamp1","Fos","Sepp1"),npcs=5,approx=FALSE)
+oligos.integratedOL <- RunPCA(oligos.integratedOL, verbose = FALSE)#,features=GeneMarkov)
+ElbowPlot(oligos.integratedOL)
+```
+```{r}
+oligos.integratedOL <- RunUMAP(oligos.integratedOL, dims = 1:30)
+#oligos.integratedScience <- RunTSNE(oligos.integratedScience, dims = 1:10)
+plots <- DimPlot(oligos.integratedOL, group.by = c("seurat_clusters"), combine = FALSE)
+plots <- lapply(X = plots, FUN = function(x) x + theme(legend.position = "top") + guides(color = guide_legend(nrow = 3, 
+    byrow = TRUE, override.aes = list(size = 3))))
+CombinePlots(plots)
+plots <- DimPlot(oligos.integratedOL, group.by = c("Sample"), combine = FALSE)
+plots <- lapply(X = plots, FUN = function(x) x + theme(legend.position = "top") + guides(color = guide_legend(nrow = 3, 
+    byrow = TRUE, override.aes = list(size = 3))))
+CombinePlots(plots)
+
+DimPlot(oligos.integratedOL, group.by = c("Sample"), combine = FALSE)
+DimPlot(oligos.integratedOL, group.by = c("seurat_clusters"), combine = FALSE)
+DimPlot(oligos.integratedOL, group.by = c("predicted.id"), combine = FALSE,label=TRUE)
+```  
+```{r include=FALSE}
+DefaultAssay(oligos.integratedOL) <- "SCT"
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+Idents(oligos.integratedOL) <- "predicted.id"
+library(dplyr)
+oligos.integrated.markersOL <- FindAllMarkers(oligos.integratedOL, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.1)
+```
+```{r}
+oligos.integrated.markersOL %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC)
+```
+
+```{r fig.width=10}
+DefaultAssay(oligos.integratedOL) <- "SCT"
+# Normalize RNA data for visualization purposes
+#oligos.integrated <- NormalizeData(oligos.integrated, verbose = FALSE)
+FeaturePlot(oligos.integratedOL, c("Pdgfra", "Ptprz1","Bmp4","Itpr2", "Egr1","Egr2", "Fos","Klk6", "Hopx", "Ptgds","Il33","Mbp","Cd74","Serpina3n"),pt.size = 1)
+
+FeaturePlot(oligos.integratedOL, c("Opalin","Ptgds","Apoe","S100b","Apod","Lamp1","Fos","Sepp1","Klk6","Hopx"),pt.size = 1)
+DefaultAssay(oligos.integrated) <- "SCT"
+```
+
+```{r}
+library(ggrepel)
+DefaultAssay(oligos.integratedOL) <- "SCT"
+Idents(oligos.integratedOL) <- "Sample"
+oligos.integrated.samplediffIS <- FindMarkers(oligos.integratedOL, ident.1 = "IS", ident.2 = "CTRL", verbose = FALSE,logfc.threshold = 0,min.pct=0)
+#head(oligos.integrated.samplediffAllRNA, n = 50)
+diffmatrix <- oligos.integrated.samplediffIS
+diffmatrix$logp_val <- -log10(diffmatrix$p_val_adj)
+ggplot(diffmatrix,aes(avg_logFC,y=logp_val,label=row.names(diffmatrix)))+ geom_point(size=0.5)+ geom_text_repel(data=subset(diffmatrix, p_val_adj < 0.01 & abs(avg_logFC) > 0.7),                              label=row.names(subset(diffmatrix, p_val_adj < 0.01 & abs(avg_logFC) > 0.7)))+xlab("log2_FC") + ylab("-log10_p-value_adj") + geom_hline(yintercept=-log10(0.01),linetype="dashed",size=0.5) 
+
+oligos.integrated.samplediffWD <- FindMarkers(oligos.integratedOL, ident.1 = "WD", ident.2 = c("CTRL"), verbose = FALSE,logfc.threshold = 0,min.pct=0)
+#head(oligos.integrated.samplediffAllRNA, n = 50)
+diffmatrix <- oligos.integrated.samplediffWD
+diffmatrix$logp_val <- -log10(diffmatrix$p_val_adj)
+ggplot(diffmatrix,aes(avg_logFC,y=logp_val,label=row.names(diffmatrix)))+ geom_point(size=0.5)+ geom_text_repel(data=subset(diffmatrix, p_val_adj < 0.01 & abs(avg_logFC) > 0.35),                              label=row.names(subset(diffmatrix, p_val_adj < 0.01 & abs(avg_logFC) > 0.35)))+xlab("log2_FC") + ylab("-log10_p-value_adj") + geom_hline(yintercept=-log10(0.01),linetype="dashed",size=0.5) 
+
+oligos.integrated.samplediffISWD <- FindMarkers(oligos.integratedOL, ident.1 = "IS", ident.2 = "WD", verbose = FALSE,logfc.threshold = 0,min.pct=0)
+#head(oligos.integrated.samplediffAllRNA, n = 50)
+diffmatrix <- oligos.integrated.samplediffISWD
+diffmatrix$logp_val <- -log10(diffmatrix$p_val_adj)
+ggplot(diffmatrix,aes(avg_logFC,y=logp_val,label=row.names(diffmatrix)))+ geom_point(size=0.5)+ geom_text_repel(data=subset(diffmatrix, p_val_adj < 0.01 & abs(avg_logFC) > 0.85),                              label=row.names(subset(diffmatrix, p_val_adj < 0.01 & abs(avg_logFC) > 0.85)))+xlab("log2_FC") + ylab("-log10_p-value_adj") + geom_hline(yintercept=-log10(0.01),linetype="dashed",size=0.5) 
+
+oligos.integrated.samplediffISWDvsCNTRL <- FindMarkers(oligos.integratedOL, ident.1 = c("IS","WD"), ident.2 = "CTRL", verbose = FALSE,logfc.threshold = 0,min.pct=0)
+#head(oligos.integrated.samplediffAllRNA, n = 50)
+diffmatrix <- oligos.integrated.samplediffISWDvsCNTRL
+diffmatrix$logp_val <- -log10(diffmatrix$p_val_adj)
+ggplot(diffmatrix,aes(avg_logFC,y=logp_val,label=row.names(diffmatrix)))+ geom_point(size=0.5)+ geom_text_repel(data=subset(diffmatrix, p_val_adj < 0.01 & abs(avg_logFC) > 0.85),                              label=row.names(subset(diffmatrix, p_val_adj < 0.01 & abs(avg_logFC) > 0.85)))+xlab("log2_FC") + ylab("-log10_p-value_adj") + geom_hline(yintercept=-log10(0.01),linetype="dashed",size=0.5) 
+DefaultAssay(oligos.integrated) <- "SCT"
+```
+```{r}
+DiffMatrix <- list()
+
+diffmatrixnames <- c("oligos.integrated.samplediffISWD",
+                    "oligos.integrated.samplediffISWDvsCNTRL")
+                     
+
+do.call(head,as.list(as.name(diffmatrixnames[1])))
+```
+```{r}
+DiffMatrix <- list()
+
+diffmatrixnames <- c("oligos.integrated.samplediffISWD",
+                    "oligos.integrated.samplediffISWDvsCNTRL")
+                     
+
+do.call(head,as.list(as.name(diffmatrixnames[1])))
+```
+```{r}
+library(clusterProfiler)
+#Convert to gencode using biomart
+library(biomaRt)
+listMarts()
+ensembl = useMart("ensembl",dataset="mmusculus_gene_ensembl")
+listDatasets(ensembl)
+attributes = listAttributes(ensembl)
+Biomart_gencode_ensembl84_biotypes <- getBM(attributes=c("mgi_symbol","ensembl_gene_id","entrezgene_id","gene_biotype"), filters = "", values = "", ensembl)
+Biomart_gencode_ensembl84_biotypes[, 'gene_biotype'] <- as.factor(Biomart_gencode_ensembl84_biotypes[,'gene_biotype'])
+#Filter for only our genes
+ Biotype_All_dataset <- subset(Biomart_gencode_ensembl84_biotypes, mgi_symbol %in% oligos.integrated@assays$SCT@var.features)
+entrezID <-  subset(Biotype_All_dataset, Biotype_All_dataset$mgi_symbol %in% oligos.integrated@assays$SCT@var.features)
+```
+```{r}
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("reactome.db")
+library(ReactomePA)
+library(org.Mm.eg.db)
+ReactomeTerms <- list()
+i=1
+#UP
+pvaladj <- 0.01
+logfc <- 0.25
+for(i in 1:length(diffmatrixnames)){
+diffmatrix <- do.call("as.data.frame",as.list(as.name(diffmatrixnames[i])))
+diffmatrix <- subset(diffmatrix, p_val_adj < pvaladj & avg_logFC > logfc)
+siggenes <- head(row.names(diffmatrix),50)
+entrezmatched <- entrezID[entrezID$mgi_symbol %in% siggenes,]
+#entrezID <- entrezID[! apply(entrezID[,c(1,3)], 1,function (x) anyNA(x)),]
+allLLIDs <- entrezmatched$entrezgene
+modulesReactome <- enrichPathway(gene=allLLIDs,organism="mouse",pvalueCutoff=0.01,qvalueCutoff = 0.3,pAdjustMethod = "none", readable=T)
+ReactomeTerms[[i]] <- modulesReactome
+head(as.data.frame(modulesReactome))
+print(i)
+}
+ReactomeTerms[which(lapply(ReactomeTerms,function(x) is.null(x))==TRUE)] <- "No_Genes"
+
+#Add DOWN 
+pvaladj <- 0.01
+logfc <- -0.25
+offset <- length(ReactomeTerms)
+for(i in 1:length(diffmatrixnames)){
+  i=i+offset
+diffmatrix <- do.call("as.data.frame",as.list(as.name(diffmatrixnames[i-offset])))
+diffmatrix <- subset(diffmatrix, p_val_adj < pvaladj & avg_logFC < logfc)
+siggenes <- head(row.names(diffmatrix),50)
+entrezmatched <- entrezID[entrezID$mgi_symbol %in% siggenes,]
+#entrezID <- entrezID[! apply(entrezID[,c(1,3)], 1,function (x) anyNA(x)),]
+allLLIDs <- entrezmatched$entrezgene
+modulesReactome <- enrichPathway(gene=allLLIDs,organism="mouse",pvalueCutoff=0.01,qvalueCutoff = 0.3,pAdjustMethod = "none", readable=T)
+ReactomeTerms[[i]] <- modulesReactome
+head(as.data.frame(modulesReactome))
+print(i)
+}
+ReactomeTerms[which(lapply(ReactomeTerms,function(x) is.null(x))==TRUE)] <- "No_Genes"
+```
+
+```{r}
+Upper_diff <- subset(oligos.integrated.samplediffISWD, p_val_adj < 0.01 & abs(avg_logFC) > 0)
+Lower_diff <- subset(oligos.integrated.samplediffISWDvsCNTRL, p_val_adj < 0.01 & abs(avg_logFC) > 0)
+AlldiffgenesHetMOL5 <- intersect(intersect(row.names(oligos.integrated.samplediffISWD),row.names(oligos.integrated.samplediffISWDvsCNTRL)),unique(c(row.names(Upper_diff),row.names(Lower_diff))))
+subset2 <- oligos.integrated.samplediffISWD[AlldiffgenesHetMOL5,]
+subset3 <- oligos.integrated.samplediffISWDvsCNTRL[AlldiffgenesHetMOL5,]
+subsetMOL5 <- cbind(subset2,subset3)
+colnames(subsetMOL5) <- make.unique(colnames(subsetMOL5))
+diffmatrix <- subsetMOL5
+diffmatrix$log_p_val <- -log10(diffmatrix$p_val_adj)
+q95pgenes1 <- row.names(diffmatrix[which(diffmatrix$log_p_val >= quantile(diffmatrix$log_p_val,0)),])
+diffmatrix$log_p_val.1 <- -log10(diffmatrix$p_val_adj.1)
+q95pgenes2 <- row.names(diffmatrix[which(diffmatrix$log_p_val.1 >= quantile(diffmatrix$log_p_val.1,0)),])
+q95pgenes <- unique(c(q95pgenes1,q95pgenes2))
+diffmatrix <- diffmatrix[q95pgenes,]
+diffmatrix$avg_logFC[is.infinite(diffmatrix$avg_logFC)] <- max(diffmatrix$avg_logFC[!is.infinite(diffmatrix$avg_logFC)])
+diffmatrix$avg_logFC.1[is.infinite(diffmatrix$avg_logFC.1)] <- max(diffmatrix$avg_logFC.1[!is.infinite(diffmatrix$avg_logFC.1)])
+#diffmatrix$avg_logFC.1 <- 2*diffmatrix$avg_logFC.1
+diffmatrix$combp <- -log10(diffmatrix$p_val_adj*diffmatrix$p_val_adj.1)
+diffmatrix$maxp <- apply(cbind(diffmatrix$log_p_val,diffmatrix$log_p_val.1),1,function(x) max(x))
+diffmatrix$minp <- apply(cbind(diffmatrix$p_val_adj,diffmatrix$p_val_adj.1),1,function(x) min(x))
+diffmatrix$maxp[is.infinite(diffmatrix$maxp)] <- max(diffmatrix$maxp[!is.infinite(diffmatrix$maxp)])
+diffmatrix$maxFC <- apply(cbind(diffmatrix$avg_logFC,diffmatrix$avg_logFC.1),1,function(x) max(abs(x))) 
+diffmatrix$Genes <- factor(row.names(diffmatrix),levels=row.names(diffmatrix))
+
+ggplot(diffmatrix,aes(avg_logFC,y=avg_logFC.1,colour=maxp,label=row.names(diffmatrix)))+ geom_point(size=diffmatrix$maxp/100) + scale_colour_viridis_c(direction = +1,option ="viridis" ) + geom_hline(yintercept= 0,linetype="dashed",size=0.1,color="cyan")+
+  geom_hline(yintercept= 0.25,linetype="dashed",size=0.1,color="grey",alpha=0.5)+
+  geom_hline(yintercept= -0.25,linetype="dashed",size=0.1,color="grey",alpha=0.5)+
+  geom_vline(xintercept= 0,linetype="dashed",size=0.1,color="cyan")+
+  geom_vline(xintercept= 0.25,linetype="dashed",size=0.1,color="grey",alpha=0.5)+
+  geom_vline(xintercept= -0.25,linetype="dashed",size=0.1,color="grey",alpha=0.5)+
+  geom_text_repel(size=3,fontface = "bold",force=1,data=subset(diffmatrix, 
+maxp > quantile(diffmatrix$maxp,0.98) #| 
+# avg_logFC > 0 |
+# avg_logFC < -0|
+# avg_logFC.1 > 0 |
+# avg_logFC.1 < -0)
+),label=row.names(subset(diffmatrix, 
+maxp > quantile(diffmatrix$maxp,0.98) #| 
+# avg_logFC > 0 |
+# avg_logFC < -0 |
+# avg_logFC.1 > 0 |
+)# avg_logFC.1 < -0)
+))+xlab("IS vs WD") + ylab("Other vs Control") +theme(
+  # get rid of panel grids
+  panel.grid.major = element_blank(),
+  #panel.grid.major = element_line(color="darkgrey",size=0.1),
+  panel.grid.minor = element_blank(),
+  #panel.grid.minor = element_line(color="darkgrey",size=0.05),
+  # Change plot and panel background
+  plot.background=element_rect(fill = "white"),
+  panel.background = element_rect(fill = 'black'),
+  # Change legend 
+  legend.background = element_rect(fill = "white", color = NA),
+  legend.key = element_rect(color = "gray", fill = "white"),
+  legend.title = element_text(color = "Black"),
+  legend.text = element_text(color = "black")
+  )
+#magma,inferno, plasma,viridis
+#scale_colour_gradient(low = "darkgreen", high = "red")
+#Do reactome analysis at the bottom of script
+i=1
+j=1
+#for(i in 1:length(ReactomeTerms)){
+for(i in 1:4){
+pwydata <- as.data.frame(ReactomeTerms[[i]])
+geneset <- strsplit(pwydata$geneID, "/")
+FCmeans <- data.frame()
+for(j in 1:length(geneset)){
+ geneset2FC <- which(row.names(diffmatrix) %in% geneset[[j]])
+ FC <- mean(diffmatrix$avg_logFC[geneset2FC],na.rm=T)
+ FCvar <- var(diffmatrix$avg_logFC[geneset2FC],na.rm=T)
+ FC.1 <- mean(diffmatrix$avg_logFC.1[geneset2FC],na.rm=T)
+ FC.1var <- var(diffmatrix$avg_logFC.1[geneset2FC],na.rm=T)
+FCmeans <- rbind(FCmeans,cbind(FC,FC.1,FCvar,FC.1var))
+ print(j)
+}
+ReactomeTerms[[i]] <- cbind(ReactomeTerms[[i]],FCmeans)
+print(i)
+}
+pathmatrix <- rbind(as.data.frame(ReactomeTerms[[1]]),as.data.frame(ReactomeTerms[[2]]),as.data.frame(ReactomeTerms[[3]]),as.data.frame(ReactomeTerms[[4]]))
+#pathmatrix <- rbind(as.data.frame(ReactomeTerms[[1]]),as.data.frame(ReactomeTerms[[2]]))
+#pathmatrix <- rbind(as.data.frame(ReactomeTerms[[3]]),as.data.frame(ReactomeTerms[[4]]))
+
+pathmatrix$p.adjust_original <- pathmatrix$p.adjust
+pathmatrix$p.adjust <- -log10(pathmatrix$p.adjust )
+pathmatrix$maxFC <- sum(abs(pathmatrix$FC),abs(pathmatrix$FC.1))
+pathmatrix <- subset(pathmatrix, pathmatrix$Count > 1)
+pathmatrix$AdjSelect <- pathmatrix$p.adjust*(500*(0.2+abs(pathmatrix$FC)))
+
+#scale_colour_gradient(low = "yellow", high = "red") +
+#scale_colour_viridis_c(direction = -1)
+#scale_colour_gradient(low = "black", high = "red")
+ggplot(pathmatrix,aes(FC,y=FC.1,colour=p.adjust_original),label=pathmatrix$Description)+ geom_point(size=pathmatrix$Count,alpha=0.5) +scale_colour_viridis_c(direction = +1,option = "viridis") +
+  geom_hline(yintercept= 0,linetype="solid",size=0.5,color="black",alpha=0.5)+
+  geom_hline(yintercept= 0.25,linetype="solid",size=0.2,color="black",alpha=0.5)+
+  geom_hline(yintercept= -0.25,linetype="solid",size=0.2,color="black",alpha=0.5)+
+  geom_vline(xintercept= 0,linetype="solid",size=0.5,color="black",alpha=0.5)+
+  geom_vline(xintercept= 0.25,linetype="solid",size=0.2,color="black",alpha=0.5)+
+  geom_vline(xintercept= -0.25,linetype="solid",size=0.2,color="black",alpha=0.5)+
+  geom_text_repel(size=2,fontface="bold",force=20,data=
+subset(pathmatrix, 
+abs(pathmatrix$AdjSelect) > quantile(
+abs(pathmatrix$AdjSelect),1,na.rm=T) | abs(pathmatrix$p.adjust) > quantile(
+abs(pathmatrix$p.adjust),0.75,na.rm=T) |
+  abs(pathmatrix$FC.1) > quantile(abs(pathmatrix$FC.1),1,na.rm=T)),
+label=subset(pathmatrix, 
+abs(pathmatrix$AdjSelect) > quantile(abs(pathmatrix$AdjSelect),1,na.rm=T) |  
+  abs(pathmatrix$p.adjust) > quantile(abs(pathmatrix$p.adjust),0.75,na.rm=T) |
+  abs(pathmatrix$FC.1) > quantile(abs(pathmatrix$FC.1),1,na.rm=T))$Description,box.padding = 0.5)+xlab("IS vs WD") + ylab("Other vs Control") 
+```
+```{r fig.width=4}
+pathmatrixsort <- pathmatrix[order(pathmatrix$FC,decreasing=T),]
+pathmatrixsort$Description <- factor(pathmatrixsort$Description, levels = unique(pathmatrixsort$Description)) 
+ggplot(pathmatrixsort, aes(x=FC, y=Description)) +
+        geom_point(aes(color = p.adjust_original))
+
+pathmatrixsort <- pathmatrix[order(pathmatrix$FC.1,decreasing=T),]
+pathmatrixsort$Description <- factor(pathmatrixsort$Description, levels = unique(pathmatrixsort$Description)) 
+ggplot(pathmatrixsort, aes(x=FC.1, y=Description)) +
+        geom_point(aes(color = p.adjust_original))
+
+pathmatrixsort <- pathmatrix[order(pathmatrix$FC,decreasing=F),]
+pathmatrixsort$Description <- factor(pathmatrixsort$Description, levels = unique(pathmatrixsort$Description)) 
+pathmatrixsort <- pathmatrixsort[!pathmatrixsort$p.adjust_original > 0.01,]
+library(reshape2)
+pathmatrixsortISWD <- pathmatrixsort[,c(2,10,14)]
+pathmatrixsortISWD$Group <- rep("ISvsWD",nrow(pathmatrixsortISWD))
+pathmatrixsortCntrlISWD <- pathmatrixsort[,c(2,11,14)]
+colnames(pathmatrixsortCntrlISWD)[2] <- "FC"
+pathmatrixsortCntrlISWD$Group <- rep("ControlvsIS-WD",nrow(pathmatrixsortCntrlISWD))
+pathmatrixsort <- rbind(pathmatrixsortISWD,pathmatrixsortCntrlISWD)
+ggplot(pathmatrixsort, aes(x=FC, y=Description)) +
+        geom_line(aes(group = Description)) +
+        geom_point(aes(color = Group))
+
+pathmatrixsort <- pathmatrix[order(pathmatrix$FC,decreasing=F),]
+pathmatrixsort$Description <- factor(pathmatrixsort$Description, levels = unique(pathmatrixsort$Description)) 
+pathmatrixsort <- pathmatrixsort[!pathmatrixsort$p.adjust_original > 0.01,]
+library(reshape2)
+ggplot(pathmatrixsort, aes(x=FC, y=Description)) +
+        geom_point(aes(color = Count))
+
+pathmatrixsort <- pathmatrix[order(pathmatrix$FC.1,decreasing=F),]
+pathmatrixsort$Description <- factor(pathmatrixsort$Description, levels = unique(pathmatrixsort$Description)) 
+pathmatrixsort <- pathmatrixsort[!pathmatrixsort$p.adjust_original > 0.01,]
+library(reshape2)
+ggplot(pathmatrixsort, aes(x=FC.1, y=Description)) +
+        geom_point(aes(color = Count))
+```
+```{r}
+#Coexpression MOL5 and MOL6 vs MOL1
+
+oligos.integratedOL256 <- subset(oligos.integrated,predicted.id %in% c("MOL2","MOL5","MOL6"))
+
+Ptgdsexpression <- oligos.integratedOL256@assays$RNA@counts["Ptgds",]
+Klk6expression <- oligos.integratedOL256@assays$RNA@counts["Klk6",]
+
+
+ExpressionCombo <- as.data.frame(t(oligos.integratedOL256@assays$RNA@counts[c("Ptgds","Klk6"),]))
+#plot(x=log(ExpressionCombo$Ptgds+1),y=log(ExpressionCombo$Klk6+1))
+ExpressionCombosorted <- ExpressionCombo[order(ExpressionCombo$Ptgds,decreasing = TRUE),]
+barplot(ExpressionCombosorted$Ptgds)
+barplot(ExpressionCombosorted$Klk6)
+
+ExpressionCombosorted <- ExpressionCombo[order(ExpressionCombo$Klk6,decreasing = FALSE),]
+barplot(ExpressionCombosorted$Ptgds)
+barplot(ExpressionCombosorted$Klk6)
+
+namesMOL56 <- oligos.integratedOL256@meta.data$predicted.id 
+plot(x=ExpressionCombo$Ptgds,y=oligos.integratedOL256@meta.data$prediction.score.MOL5)
+plot(x=ExpressionCombo$Ptgds,y=oligos.integratedOL256@meta.data$prediction.score.MOL6)
+
+ExpressionCombosorted <- ExpressionCombo[order(ExpressionCombo$Ptgds,decreasing = TRUE),]
+MOL6pred <- oligos.integratedOL256@meta.data$prediction.score.MOL6
+names(MOL6pred) <- row.names(oligos.integratedOL256@meta.data)
+barplot(MOL6pred[row.names(ExpressionCombosorted)])
+
+MOL5pred <- oligos.integratedOL256@meta.data$prediction.score.MOL5
+names(MOL5pred) <- row.names(oligos.integratedOL256@meta.data)
+barplot(MOL5pred[row.names(ExpressionCombosorted)])
+
+MOL56pred <- rowMeans(cbind(MOL5pred,MOL6pred))
+barplot(MOL56pred[row.names(ExpressionCombosorted)])
+plot(MOL56pred,ExpressionCombosorted$Ptgds)
+
+ExpressionCombosorted <- ExpressionCombo[order(ExpressionCombo$Klk6,decreasing = FALSE),]
+MOL2pred <- oligos.integratedOL256@meta.data$prediction.score.MOL2
+names(MOL2pred) <- row.names(oligos.integratedOL256@meta.data)
+barplot(MOL2pred[row.names(ExpressionCombosorted)])
+
+ExpressionCombo <- as.data.frame(t(oligos.integratedOL256@assays$RNA@counts[c("Ptgds","Klk6"),]))
+pred <- (MOL56pred)-(MOL2pred)
+ExpressionCombosorted <- ExpressionCombo[order(ExpressionCombo$Ptgds,decreasing = TRUE),]
+barplot(ExpressionCombosorted$Ptgds)
+barplot(pred[row.names(ExpressionCombosorted)])
+
+ExpressionCombosorted <- ExpressionCombo[order(ExpressionCombo$Klk6,decreasing = FALSE),]
+barplot(ExpressionCombosorted$Klk6)
+barplot(pred[row.names(ExpressionCombosorted)])
+
+ExpressionCombo <- as.data.frame(t(oligos.integratedOL256@assays$RNA@counts[c("Ptgds","Klk6"),]))
+MOL56ID <-  1*oligos.integratedOL256@meta.data$predicted.id %in% c("MOL5","MOL6")
+MOL2ID <-  -1*oligos.integratedOL256@meta.data$predicted.id %in% c("MOL2")
+MOLID <- MOL56ID+MOL2ID
+names(MOLID) <- row.names(oligos.integratedOL256@meta.data)
+
+ExpressionCombosorted <- ExpressionCombo[order(ExpressionCombo$Ptgds,decreasing = TRUE),]
+barplot(ExpressionCombosorted$Ptgds)
+barplot(MOLID[row.names(ExpressionCombosorted)])
+ExpressionCombosorted <- ExpressionCombo[order(ExpressionCombo$Klk6,decreasing = TRUE),]
+barplot(ExpressionCombosorted$Klk6)
+barplot(MOLID[row.names(ExpressionCombosorted)])
+
+
+
+ExpressionCombo <- as.data.frame(t(oligos.integratedOL256@assays$RNA@counts[c("Ptgds","Klk6"),]))
+MOLID <- droplevels(oligos.integratedOL256@meta.data$predicted.id)
+names(MOLID) <- row.names(oligos.integratedOL256@meta.data)
+ExpressionCombosorted <- ExpressionCombo[order(ExpressionCombo$Ptgds,decreasing = TRUE),]
+ExpressionCombosorted$ID <- MOLID[row.names(ExpressionCombosorted)] 
+ExpressionCombosorted$order <- seq_len(nrow(ExpressionCombosorted))
+ggplot(ExpressionCombosorted, aes(x=order, fill=ID)) +
+  geom_density(alpha=0.4)
+
+ExpressionCombo <- as.data.frame(t(oligos.integratedOL256@assays$RNA@counts[c("Ptgds","Klk6","S100b","Opalin","Hopx","Apoe","Apod"),]))
+MOLID <- droplevels(oligos.integratedOL256@meta.data$predicted.id)
+names(MOLID) <- row.names(oligos.integratedOL256@meta.data)
+ExpressionCombosorted <- ExpressionCombo[order(ExpressionCombo$Klk6,decreasing = TRUE),]
+ExpressionCombosorted$ID <- MOLID[row.names(ExpressionCombosorted)] 
+ExpressionCombosorted$order <- seq_len(nrow(ExpressionCombosorted))
+ggplot(ExpressionCombosorted, aes(x=order, fill=ID)) +
+  geom_density(alpha=0.4)
+
+ggplot(ExpressionCombosorted, aes(x=log(Ptgds+1), fill=ID)) +
+  geom_density(alpha=0.4)
+
+ggplot(ExpressionCombosorted, aes(x=log(Klk6+1), fill=ID)) +
+  geom_density(alpha=0.4)
+
+ggplot(ExpressionCombosorted, aes(x=log(S100b+1), fill=ID)) +
+  geom_density(alpha=0.4)
+ggplot(ExpressionCombosorted, aes(x=log(Opalin+1), fill=ID)) +
+  geom_density(alpha=0.4)
+ggplot(ExpressionCombosorted, aes(x=log(Hopx+1), fill=ID)) +
+  geom_density(alpha=0.4)
+ggplot(ExpressionCombosorted, aes(x=log(Apoe+1), fill=ID)) +
+  geom_density(alpha=0.4)
+ggplot(ExpressionCombosorted, aes(x=log(Apod+1), fill=ID)) +
+  geom_density(alpha=0.4)
+
+ggplot(ExpressionCombosorted, aes(x=log(Klk6+1),y=log(Ptgds+1), color=ID)) +
+  geom_point(alpha=0.4)
+
+ggplot(ExpressionCombosorted, aes(x=Ptgds, fill=ID)) +
+  geom_density(alpha=0.4)
+
+ggplot(ExpressionCombosorted, aes(x=Klk6, fill=ID)) +
+  geom_density(alpha=0.4)
+
+
+```
