@@ -128,92 +128,6 @@ DimPlot(oligos.integrated, group.by = c("Sample"), combine = FALSE)
 ```{r}
 table(oligos.integrated$Sample,oligos.integrated$predicted.id)
 ```
-```{r}
-data <- as.data.frame(table(oligos.integrated$Sample,droplevels(as.factor(oligos.integrated$predicted.id))))
-colnames(data) <- c("Condition","Cluster","Freq")
-library(plyr)
-data$Cluster  <- factor(data$Cluster,levels=c("OPC","COP","NFOL1","MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6","PPR"))
-data <- data[which(data$Cluster %in% c("MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6")),]
-#data$Cluster  <- factor(data$Cluster,levels=c("MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6"))
-library(reshape2)
-datacasted <- dcast(data,Cluster ~ Condition)
-calc_cpm <-function (expr_mat) 
-{
-    norm_factor <- colSums(expr_mat)
-    return(t(t(expr_mat)/norm_factor))
-}
-datacasted[,2:4] <- calc_cpm(datacasted[,2:4])
-data <- melt(datacasted)
-colnames(data) <- c("Condition","Cluster","Freq")
-#data$Cluster  <- revalue(as.factor(data$Cluster),c("PPR"="VLMC"))
-# Stacked + percent
-ggplot(data, aes(fill=Condition, y=Freq, x=Cluster)) + 
-    geom_bar(position="fill", stat="identity")
-ggplot(data, aes(fill=Cluster, y=Freq, x=Condition)) + 
-    geom_bar( stat="identity")
-
-row.names(datacasted) <- datacasted[,1]
-datacasted <- datacasted[,2:4]*100
-datamelted <- melt(t(datacasted))
-
-ggplot(datamelted, aes(y = value, x = Var2)) + # Move y and x here so than they can be used in stat_*
-    geom_dotplot(aes(fill = Var1),   # Use fill = Species here not in ggplot()
-                 binaxis = "y",         # which axis to bin along
-                 binwidth = 1,        # Minimal difference considered diffeerent
-                 stackdir = "center",
-                 position = position_jitter(0.2)# Centered
-                 ) +  # scale_y_log10() + 
-    stat_summary(fun.y = mean, fun.ymin = mean, fun.ymax = mean,
-                 geom = "crossbar", width = 0.5,fatten = 0.01) + theme(axis.text.x = element_text(angle = 45))
-```
-```{r fig.height=3, fig.width=3}
-library(heatmap3)
-library(viridis)
-data <- as.data.frame(table(oligos.integrated$Sample,droplevels(as.factor(oligos.integrated$predicted.id))))
-colnames(data) <- c("Condition","Cluster","Freq")
-library(plyr)
-data$Cluster  <- factor(data$Cluster,levels=c("OPC","COP","NFOL1","MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6","PPR"))
-data <- data[which(data$Cluster %in% c("MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6")),]
-#data$Cluster  <- factor(data$Cluster,levels=c("MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6"))
-library(reshape2)
-datacasted <- dcast(data,Cluster ~ Condition)
-calc_cpm <-function (expr_mat) 
-{
-    norm_factor <- colSums(expr_mat)
-    return(t(t(expr_mat)/norm_factor))
-}
-datacasted[,2:4] <- calc_cpm(datacasted[,2:4])*100
-row.names(datacasted) <- datacasted[,1]
-datacasted <- datacasted[,2:4]
-comparison <-datacasted-apply(datacasted,1,function(x) mean(x))
-comparison <-datacasted-datacasted[,1]
-heatmap3(comparison[rev(row.names(comparison)),], Rowv = NA , Colv = NA ,scale = "none",symm = F, method = "ward.D2",col=viridis(1000),balanceColor =F,cexRow = 1,cexCol = 1,margins = c(10, 10))
-library(RColorBrewer)
-heatmap3(comparison[rev(row.names(comparison)),], Rowv = NA , Colv = NA ,scale = "none",symm = F, method = "ward.D2",col=rev(colorRampPalette(brewer.pal(1024,"RdBu"))(1024)),balanceColor =T,cexRow = 1,cexCol = 1,margins = c(10, 10))
-  relationshipratio <- cor(t(comparison),method="pearson")
-heatmap3(relationshipratio[rev(row.names(comparison)),], Rowv = NULL , Colv = NULL ,scale = "none",symm = F, method = "ward.D2",col=colorRampPalette(c("limegreen","black",
-"firebrick3"))(1024),balanceColor =F,cexRow = 2,cexCol = 2,margins = c(10, 10))
-```
-```{r}
-barplot(table(oligos.integrated$Sample,oligos.integrated$predicted.id))
-data <- as.data.frame(table(oligos.integrated$Sample,oligos.integrated$predicted.id))
-colnames(data) <- c("Condition","Cluster","Freq")
-library(plyr)
-data$Cluster  <- factor(data$Cluster,levels=c("OPC","COP","NFOL1","MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6","PPR"))
-data$Cluster  <- revalue(as.factor(data$Cluster),c("PPR"="VLMC"))
-dataIS_CTRL <- data[which(data$Condition %in% c("IS","CTRL")),]
-dataWD_CTRL <- data[which(data$Condition %in% c("WD","CTRL")),]
-dataIS_WD <- data[which(data$Condition %in% c("IS","WD")),]
-# Stacked + percent
-ggplot(data, aes(fill=Condition, y=Freq, x=Cluster)) + 
-    geom_bar(position="fill", stat="identity")
-ggplot(dataIS_CTRL, aes(fill=Condition, y=Freq, x=Cluster)) + 
-    geom_bar(position="fill", stat="identity")
-ggplot(dataWD_CTRL, aes(fill=Condition, y=Freq, x=Cluster)) + 
-    geom_bar(position="fill", stat="identity")
-ggplot(dataIS_WD, aes(fill=Condition, y=Freq, x=Cluster)) + 
-    geom_bar(position="fill", stat="identity")
-```
 
 ```{r}
 #subset OPCs
@@ -249,7 +163,7 @@ samplesize <- 2000 #how many cells to take for sampling
 threshold <- 3 #use mean spatial correlation of geneset of the featureselection (1) or after the first round of filtering (2) (more strict, which is default) 
 nsim <- 100
 nnquant <- 0.995 #lower for small datasets, higher for speedups in larger datasets
-
+set.seed(1234)
 tri.to.squ<-function(x)
 {
 rn<-row.names(x)
@@ -529,8 +443,99 @@ top10 <- oligos.integrated.markersIm %>% group_by(cluster) %>% top_n(n = 10, wt 
 DoHeatmap(oligos.integratedIm, features =intersect(oligos.integrated.markersIm$gene,unique(c(unlist(GeneMarkovList[5]),top10$gene))),disp.max=3) + NoLegend() +scale_fill_viridis()
 ```
 ```{r}
+nonOL <- colnames(oligos.integratedIm)[oligos.integratedIm@meta.data$seurat_clusters %in% c(3:6,8)]
+oligos.integrated <- oligos.integrated[,! colnames(oligos.integrated) %in% nonOL]
+data <- as.data.frame(table(oligos.integrated$Sample,droplevels(as.factor(oligos.integrated$predicted.id))))
+colnames(data) <- c("Condition","Cluster","Freq")
+library(plyr)
+data$Cluster  <- factor(data$Cluster,levels=c("OPC","COP","NFOL1","MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6","PPR"))
+data <- data[which(data$Cluster %in% c("MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6")),]
+#data$Cluster  <- factor(data$Cluster,levels=c("MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6"))
+library(reshape2)
+datacasted <- dcast(data,Cluster ~ Condition)
+calc_cpm <-function (expr_mat) 
+{
+    norm_factor <- colSums(expr_mat)
+    return(t(t(expr_mat)/norm_factor))
+}
+datacasted[,2:4] <- calc_cpm(datacasted[,2:4])
+data <- melt(datacasted)
+colnames(data) <- c("Condition","Cluster","Freq")
+#data$Cluster  <- revalue(as.factor(data$Cluster),c("PPR"="VLMC"))
+# Stacked + percent
+ggplot(data, aes(fill=Condition, y=Freq, x=Cluster)) + 
+    geom_bar(position="fill", stat="identity")
+ggplot(data, aes(fill=Cluster, y=Freq, x=Condition)) + 
+    geom_bar( stat="identity")
+
+row.names(datacasted) <- datacasted[,1]
+datacasted <- datacasted[,2:4]*100
+datamelted <- melt(t(datacasted))
+
+ggplot(datamelted, aes(y = value, x = Var2)) + # Move y and x here so than they can be used in stat_*
+    geom_dotplot(aes(fill = Var1),   # Use fill = Species here not in ggplot()
+                 binaxis = "y",         # which axis to bin along
+                 binwidth = 1,        # Minimal difference considered diffeerent
+                 stackdir = "center",
+                 position = position_jitter(0.2)# Centered
+                 ) +  # scale_y_log10() + 
+    stat_summary(fun.y = mean, fun.ymin = mean, fun.ymax = mean,
+                 geom = "crossbar", width = 0.5,fatten = 0.01) + theme(axis.text.x = element_text(angle = 45))
+```
+```{r fig.height=3, fig.width=3}
+library(heatmap3)
+library(viridis)
+data <- as.data.frame(table(oligos.integrated$Sample,droplevels(as.factor(oligos.integrated$predicted.id))))
+colnames(data) <- c("Condition","Cluster","Freq")
+library(plyr)
+data$Cluster  <- factor(data$Cluster,levels=c("OPC","COP","NFOL1","MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6","PPR"))
+data <- data[which(data$Cluster %in% c("MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6")),]
+#data$Cluster  <- factor(data$Cluster,levels=c("MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6"))
+library(reshape2)
+datacasted <- dcast(data,Cluster ~ Condition)
+calc_cpm <-function (expr_mat) 
+{
+    norm_factor <- colSums(expr_mat)
+    return(t(t(expr_mat)/norm_factor))
+}
+datacasted[,2:4] <- calc_cpm(datacasted[,2:4])*100
+row.names(datacasted) <- datacasted[,1]
+datacasted <- datacasted[,2:4]
+comparison <-datacasted-apply(datacasted,1,function(x) mean(x))
+comparison <-datacasted-datacasted[,1]
+heatmap3(comparison[rev(row.names(comparison)),], Rowv = NA , Colv = NA ,scale = "none",symm = F, method = "ward.D2",col=viridis(1000),balanceColor =F,cexRow = 1,cexCol = 1,margins = c(10, 10))
+library(RColorBrewer)
+heatmap3(comparison[rev(row.names(comparison)),], Rowv = NA , Colv = NA ,scale = "none",symm = F, method = "ward.D2",col=rev(colorRampPalette(brewer.pal(1024,"RdBu"))(1024)),balanceColor =T,cexRow = 1,cexCol = 1,margins = c(10, 10))
+  relationshipratio <- cor(t(comparison),method="pearson")
+heatmap3(relationshipratio[rev(row.names(comparison)),], Rowv = NULL , Colv = NULL ,scale = "none",symm = F, method = "ward.D2",col=colorRampPalette(c("limegreen","black",
+"firebrick3"))(1024),balanceColor =F,cexRow = 2,cexCol = 2,margins = c(10, 10))
+```
+```{r}
+barplot(table(oligos.integrated$Sample,oligos.integrated$predicted.id))
+data <- as.data.frame(table(oligos.integrated$Sample,oligos.integrated$predicted.id))
+colnames(data) <- c("Condition","Cluster","Freq")
+library(plyr)
+data$Cluster  <- factor(data$Cluster,levels=c("OPC","COP","NFOL1","MFOL1","MFOL2","MOL1","MOL2","MOL3","MOL4","MOL5","MOL6","PPR"))
+data$Cluster  <- revalue(as.factor(data$Cluster),c("PPR"="VLMC"))
+dataIS_CTRL <- data[which(data$Condition %in% c("IS","CTRL")),]
+dataWD_CTRL <- data[which(data$Condition %in% c("WD","CTRL")),]
+dataIS_WD <- data[which(data$Condition %in% c("IS","WD")),]
+# Stacked + percent
+ggplot(data, aes(fill=Condition, y=Freq, x=Cluster)) + 
+    geom_bar(position="fill", stat="identity")
+ggplot(dataIS_CTRL, aes(fill=Condition, y=Freq, x=Cluster)) + 
+    geom_bar(position="fill", stat="identity")
+ggplot(dataWD_CTRL, aes(fill=Condition, y=Freq, x=Cluster)) + 
+    geom_bar(position="fill", stat="identity")
+ggplot(dataIS_WD, aes(fill=Condition, y=Freq, x=Cluster)) + 
+    geom_bar(position="fill", stat="identity")
+```
+```{r}
 #for MT=10%
 oligos.integratedOL <- subset(oligos.integrated,seurat_clusters %in% c(1:6,8,9))
+# #subset nonOLlineage cells
+# nonOL <- colnames(oligos.integratedIm)[oligos.integratedIm@meta.data$seurat_clusters %in% c(3:6,8)]
+# oligos.integratedOL <- oligos.integratedOL[,! colnames(oligos.integratedOL) %in% nonOL]
 #non-integrated
 #oligos.integratedOL <- subset(oligos.integrated,seurat_clusters %in% c(1:6,10))
 #for MT=5%
